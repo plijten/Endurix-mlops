@@ -1,0 +1,115 @@
+# Bestand 2: `.github/workflows/ci.yml`
+
+name: Endurix MLOps CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-mlops:
+    name: Validate MLOps repository
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Show Python version
+        run: python --version
+
+      - name: Install dependencies if requirements.txt exists
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            echo "No requirements.txt found. Skipping dependency install."
+          fi
+
+      - name: Validate JSON files
+        shell: bash
+        run: |
+          JSON_FILES=$(find . -name "*.json" -not -path "./.git/*")
+          
+          if [ -z "$JSON_FILES" ]; then
+            echo "No JSON files found."
+          else
+            for file in $JSON_FILES; do
+              echo "Validating $file"
+              python -m json.tool "$file" > /dev/null
+            done
+          fi
+
+      - name: Validate YAML files
+        shell: bash
+        run: |
+          python - <<'PY'
+          import sys
+          import subprocess
+          
+          try:
+              import yaml
+          except ImportError:
+              subprocess.check_call([sys.executable, "-m", "pip", "install", "pyyaml"])
+          PY
+          
+          YAML_FILES=$(find . \( -name "*.yml" -o -name "*.yaml" \) -not -path "./.git/*")
+          
+          if [ -z "$YAML_FILES" ]; then
+            echo "No YAML files found."
+          else
+            python - <<'PY'
+          import yaml
+          from pathlib import Path
+          
+          files = list(Path(".").rglob("*.yml")) + list(Path(".").rglob("*.yaml"))
+          files = [f for f in files if ".git" not in f.parts]
+          
+          for file in files:
+              print(f"Validating {file}")
+              with open(file, "r", encoding="utf-8") as stream:
+                  yaml.safe_load(stream)
+          PY
+          fi
+
+      - name: Run Python tests if present
+        shell: bash
+        run: |
+          TEST_FILES=$(find . -name "test_*.py" -o -name "*_test.py")
+          
+          if [ -z "$TEST_FILES" ]; then
+            echo "No Python tests found. Skipping pytest."
+          else
+            pip install pytest
+            pytest
+          fi
+
+      - name: Check for possible secrets
+        shell: bash
+        run: |
+          echo "Checking for suspicious secret patterns..."
+          
+          if grep -RInE "(api[_-]?key|secret|token|password)\s*[:=]\s*['\"][A-Za-z0-9_\-]{12,}" . \
+            --exclude-dir=.git \
+            --exclude="*.md"; then
+            echo "Possible secret found. Please review."
+            exit 1
+          else
+            echo "No obvious secrets found."
+          fi
